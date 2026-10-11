@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import numpy as np
+
 import torch
 import torch.nn as nn
 
@@ -102,3 +104,45 @@ class GesturePredictor:
         predicted_label = self.class_mapping[predicted_index]
 
         return predicted_index, predicted_label
+
+    
+    def predict_with_confidence(self, sequence):
+        """Predict a gesture and return its confidence."""
+
+        sequence = np.asarray(sequence, dtype=np.float32)
+
+        if sequence.ndim != 2 or sequence.shape[1] != 126:
+            raise ValueError(
+                f"Expected sequence shape (T, 126), got {sequence.shape}"
+            )
+
+        if sequence.shape[0] == 0:
+            raise ValueError("Cannot predict an empty sequence.")
+
+        if not np.isfinite(sequence).all():
+            raise ValueError("Sequence contains NaN or infinite values.")
+
+        sequence_tensor = torch.as_tensor(
+            sequence,
+            dtype=torch.float32,
+            device=self.device,
+        )
+
+        sequence_tensor = sequence_tensor.unsqueeze(0)
+
+        lengths = torch.tensor(
+            [sequence.shape[0]],
+            dtype=torch.long,
+        )
+
+        with torch.no_grad():
+            logits = self.model(sequence_tensor, lengths)
+            probabilities = torch.softmax(logits, dim=1)
+            confidence, predicted_index = probabilities.max(dim=1)
+
+        index = predicted_index.item()
+
+        # Fallback prevents a missing mapping entry from crashing inference.
+        label = self.class_mapping.get(index, f"Class {index}")
+
+        return index, label, confidence.item()
