@@ -18,15 +18,43 @@ from src.inference.preprocessing import (
 )
 from src.inference.sequence_buffer import SequenceBuffer
 
+GESTURE_NAMES = {
+    "B0A": "Pointing with one Finger",
+    "B0B": "Pointing with two Fingers",
+    "G01": "Click with one Finger",
+    "G02": "Click with two Fingers",
+    "G03": "Thumb Gesture",
+    "G04": "Pointing down",
+    "G05": "Left",
+    "G06": "Right",
+    "G07": "Open Hand",
+    "G08": "Double click with one Finger",
+    "G09": "Double click with two Fingers",
+    "G10": "Hand Gesture 10",
+}
 
-PROJECT_ROOT = Path(__file__).resolve().parent
+PROJECT_ROOT = next(
+    (
+        parent
+        for parent in Path(__file__).resolve().parents
+        if (parent / "configs" / "config.yaml").is_file()
+    ),
+    None,
+)
+
+if PROJECT_ROOT is None:
+    raise RuntimeError("Could not locate the AirCommand project root.")
+
 MODEL_PATH = (
-    PROJECT_ROOT / "models" / "checkpoints" / "final_motion_gru.pt"
+    PROJECT_ROOT
+    / "models"
+    / "checkpoints"
+    / "final_motion_gru.pt"
 )
 
 BUFFER_LENGTH = 192
 PREDICTION_INTERVAL = 5
-MIN_FRAMES_FOR_PREDICTION = 15
+MIN_FRAMES_FOR_PREDICTION = 30
 MAX_MISSED_FRAMES = 5
 CONFIDENCE_THRESHOLD = 0.0
 PREDICTION_REQUIRED_CONSECUTIVE = 2
@@ -189,13 +217,40 @@ def main():
                     status_color = (0, 0, 255)
                 else:
                     previous_position = current_position
-                    if not buffer.append(frame_features):
-                        previous_position = None
-                        buffer.clear()
-                        prediction_state = reset_prediction_state(prediction_state)
-                        last_prediction = "Show your hand"
-                        status_text = "Tracking reset"
-                        status_color = (0, 0, 255)
+                    buffer.append(frame_features)
+
+                    if (
+                        len(buffer) >= MIN_FRAMES_FOR_PREDICTION
+                        and frame_count % PREDICTION_INTERVAL == 0
+                    ):
+                        sequence = buffer.get_sequence()
+                        sequence = prepare_sequence(sequence)
+
+                        _, predicted_label, confidence = (
+                            predictor.predict_with_confidence(sequence)
+                        )
+
+                        confirmed_label, prediction_state = update_prediction_state(
+                            raw_label=predicted_label,
+                            confidence=confidence,
+                            state=prediction_state,
+                            confidence_threshold=CONFIDENCE_THRESHOLD,
+                            required_consecutive=PREDICTION_REQUIRED_CONSECUTIVE,
+                            cooldown_frames=PREDICTION_COOLDOWN_FRAMES,
+                            frame_index=frame_count,
+                        )
+
+                        print(
+                            f"Raw: {predicted_label} | "
+                            f"Confidence: {confidence:.3f} | "
+                            f"Buffered frames: {len(buffer)}"
+                        )
+
+                        if confirmed_label is not None:
+                            last_prediction = GESTURE_NAMES.get(confirmed_label, confirmed_label)
+
+                        status_text = f"Hand detected | Frames: {len(buffer)}"
+                        status_color = (0, 200, 0)
                     else:
                         if (
                             len(buffer) >= MIN_FRAMES_FOR_PREDICTION
@@ -229,16 +284,16 @@ def main():
                                             confirmed_label,
                                         )
                                     )
-                                last_prediction = confirmed_label
+                                last_prediction = GESTURE_NAMES.get(confirmed_label, confirmed_label)
 
                         status_text = "Hand detected"
                         status_color = (0, 200, 0)
 
             else:
                 missed_frames += 1
+                previous_position = None
 
                 if missed_frames > MAX_MISSED_FRAMES:
-                    previous_position = None
                     buffer.clear()
                     prediction_state = reset_prediction_state(prediction_state)
                     last_prediction = "Show your hand"
